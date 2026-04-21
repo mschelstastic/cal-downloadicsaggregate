@@ -11,7 +11,7 @@ use std::sync::mpsc;
 const TARGET_TZ: &str = "America/Vancouver";
 const AGGREGATE: &str = "aggregate.ics";
 const AGGREGATE_TMP: &str = "aggregate.ics.tmp";
-const SETTLE: Duration = Duration::from_secs(30);
+const SETTLE: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_secs(5);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -44,13 +44,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             ready
         };
-        for path in ready {
-            if is_target_ics(&path) {
-                println!("Processing (settled): {}", path.display());
-                if let Err(e) = process_file(&downloads_poll, &path) {
-                    eprintln!("Error processing {}: {}", path.display(), e);
-                }
-            }
+        let ready: Vec<PathBuf> = ready.into_iter().filter(|p| is_target_ics(p)).collect();
+        if !ready.is_empty() {
+            println!("Processing {} settled file(s)...", ready.len());
+            process_batch(&downloads_poll, ready);
         }
     });
 
@@ -100,34 +97,49 @@ fn process_existing(downloads: &Path) -> Result<(), Box<dyn std::error::Error>> 
     }
 
     println!("Processing {} existing file(s)...", ics_files.len());
-    for path in ics_files {
-        if let Err(e) = process_file(downloads, &path) {
-            eprintln!("Error processing {}: {}", path.display(), e);
-        }
-    }
+    process_batch(downloads, ics_files);
     Ok(())
 }
 
-fn process_file(downloads: &Path, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn process_batch(downloads: &Path, paths: Vec<PathBuf>) {
+    let mut to_trash: Vec<PathBuf> = Vec::new();
+    for path in paths {
+        match process_file(downloads, &path) {
+            Ok(0) => {}
+            Ok(_) => {
+                to_trash.push(path);
+            }
+            Err(e) => eprintln!("Error processing {}: {}", path.display(), e),
+        }
+    }
+
+    if to_trash.is_empty() {
+        return;
+    }
+
+    for p in &to_trash {
+        println!("  Trashing: {}", p.display());
+    }
+    if let Err(e) = trash::delete_all(&to_trash) {
+        eprintln!("Trash error: {e}");
+    }
+
+
+}
+
+fn process_file(downloads: &Path, path: &Path) -> Result<usize, Box<dyn std::error::Error>> {
     let content = fs::read_to_string(path)?;
     let new_events = extract_exercise_events(&content)?;
 
     if new_events.is_empty() {
         println!("  No exercise events in {}, leaving untouched.", path.display());
-        return Ok(());
+        return Ok(0);
     }
 
     let count = new_events.len();
     println!("  {} exercise event(s) found.", count);
     update_aggregate(downloads, new_events)?;
-    trash::delete(path)?;
-    println!("  Trashed: {}", path.display());
-    let title = path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown");
-    macos_notify(
-        "Exercise calendar updated",
-        &format!("Added {} event{} from {}", count, if count == 1 { "" } else { "s" }, title),
-    );
-    Ok(())
+    Ok(count)
 }
 
 fn update_aggregate(
@@ -288,15 +300,6 @@ fn is_target_ics(path: &Path) -> bool {
         && path.exists()
 }
 
-fn macos_notify(title: &str, message: &str) {
-    // Escape for AppleScript string literals.
-    let title = title.replace('\\', "\\\\").replace('"', "\\\"");
-    let message = message.replace('\\', "\\\\").replace('"', "\\\"");
-    let script = format!(r#"display notification "{message}" with title "{title}""#);
-    let _ = std::process::Command::new("osascript")
-        .args(["-e", &script])
-        .status();
-}
 
 fn dirs_home() -> Result<PathBuf, Box<dyn std::error::Error>> {
     std::env::var("HOME")
