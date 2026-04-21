@@ -142,6 +142,17 @@ fn process_file(downloads: &Path, path: &Path) -> Result<usize, Box<dyn std::err
     Ok(count)
 }
 
+fn event_uid(event: &str) -> String {
+    for line in event.lines() {
+        let line = line.trim_end_matches('\r');
+        if let Some(uid) = line.strip_prefix("UID:") {
+            return uid.to_string();
+        }
+    }
+    // Fall back to the full event text so UID-less events are still kept.
+    event.to_string()
+}
+
 fn update_aggregate(
     downloads: &Path,
     new_events: Vec<String>,
@@ -149,14 +160,28 @@ fn update_aggregate(
     let aggregate_path = downloads.join(AGGREGATE);
     let tmp_path = downloads.join(AGGREGATE_TMP);
 
-    let mut events: Vec<String> = if aggregate_path.exists() {
+    // Use an IndexMap-like approach: insertion-ordered HashMap via Vec + HashMap.
+    // Simpler: collect into a Vec preserving order, de-dupe with a HashMap.
+    let existing: Vec<String> = if aggregate_path.exists() {
         let content = fs::read_to_string(&aggregate_path)?;
         extract_raw_events(&content)
     } else {
         Vec::new()
     };
 
-    events.extend(new_events);
+    // Build ordered de-duped list: existing first, then new events (new wins on collision).
+    let mut uid_to_idx: HashMap<String, usize> = HashMap::new();
+    let mut events: Vec<String> = Vec::new();
+
+    for event in existing.into_iter().chain(new_events) {
+        let uid = event_uid(&event);
+        if let Some(&idx) = uid_to_idx.get(&uid) {
+            events[idx] = event;
+        } else {
+            uid_to_idx.insert(uid, events.len());
+            events.push(event);
+        }
+    }
 
     let mut output = String::new();
     output.push_str("BEGIN:VCALENDAR\r\n");
