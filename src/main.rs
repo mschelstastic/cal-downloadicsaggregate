@@ -117,10 +117,16 @@ fn process_file(downloads: &Path, path: &Path) -> Result<(), Box<dyn std::error:
         return Ok(());
     }
 
-    println!("  {} exercise event(s) found.", new_events.len());
+    let count = new_events.len();
+    println!("  {} exercise event(s) found.", count);
     update_aggregate(downloads, new_events)?;
     trash::delete(path)?;
     println!("  Trashed: {}", path.display());
+    let title = path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown");
+    macos_notify(
+        "Exercise calendar updated",
+        &format!("Added {} event{} from {}", count, if count == 1 { "" } else { "s" }, title),
+    );
     Ok(())
 }
 
@@ -280,6 +286,16 @@ fn is_target_ics(path: &Path) -> bool {
             Some(AGGREGATE) | Some(AGGREGATE_TMP)
         )
         && path.exists()
+}
+
+fn macos_notify(title: &str, message: &str) {
+    // Escape for AppleScript string literals.
+    let title = title.replace('\\', "\\\\").replace('"', "\\\"");
+    let message = message.replace('\\', "\\\\").replace('"', "\\\"");
+    let script = format!(r#"display notification "{message}" with title "{title}""#);
+    let _ = std::process::Command::new("osascript")
+        .args(["-e", &script])
+        .status();
 }
 
 fn dirs_home() -> Result<PathBuf, Box<dyn std::error::Error>> {
