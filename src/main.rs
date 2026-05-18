@@ -1,4 +1,16 @@
-use chrono::{FixedOffset, NaiveDateTime, TimeZone};
+use chrono::{FixedOffset, Local, NaiveDateTime, TimeZone};
+
+macro_rules! log {
+    ($($arg:tt)*) => {
+        println!("[{}] {}", Local::now().format("%Y-%m-%d %H:%M:%S"), format!($($arg)*))
+    };
+}
+
+macro_rules! elog {
+    ($($arg:tt)*) => {
+        eprintln!("[{}] {}", Local::now().format("%Y-%m-%d %H:%M:%S"), format!($($arg)*))
+    };
+}
 use sha2::{Digest, Sha256};
 use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
@@ -21,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Files already present when we start are assumed complete.
     process_existing(&downloads)?;
 
-    println!("Watching {} for new .ics files...", downloads.display());
+    log!("Watching {} for new .ics files...", downloads.display());
 
     // Map of path -> time of last observed event, guarded by a mutex shared
     // between the watcher thread (writes) and the poller thread (reads/removes).
@@ -47,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let ready: Vec<PathBuf> = ready.into_iter().filter(|p| is_target_ics(p)).collect();
         if !ready.is_empty() {
-            println!("Processing {} settled file(s)...", ready.len());
+            log!("Processing {} settled file(s)...", ready.len());
             process_batch(&downloads_poll, ready);
         }
     });
@@ -79,7 +91,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-            Err(e) => eprintln!("Watch error: {e}"),
+            Err(e) => elog!("Watch error: {e}"),
         }
     }
 
@@ -97,7 +109,7 @@ fn process_existing(downloads: &Path) -> Result<(), Box<dyn std::error::Error>> 
         return Ok(());
     }
 
-    println!("Processing {} existing file(s)...", ics_files.len());
+    log!("Processing {} existing file(s)...", ics_files.len());
     process_batch(downloads, ics_files);
     Ok(())
 }
@@ -110,7 +122,7 @@ fn process_batch(downloads: &Path, paths: Vec<PathBuf>) {
             Ok(_) => {
                 to_trash.push(path);
             }
-            Err(e) => eprintln!("Error processing {}: {}", path.display(), e),
+            Err(e) => elog!("Error processing {}: {}", path.display(), e),
         }
     }
 
@@ -119,10 +131,10 @@ fn process_batch(downloads: &Path, paths: Vec<PathBuf>) {
     }
 
     for p in &to_trash {
-        println!("  Trashing: {}", p.display());
+        log!("  Trashing: {}", p.display());
     }
     if let Err(e) = trash::delete_all(&to_trash) {
-        eprintln!("Trash error: {e}");
+        elog!("Trash error: {e}");
     }
 
 
@@ -133,12 +145,12 @@ fn process_file(downloads: &Path, path: &Path) -> Result<usize, Box<dyn std::err
     let new_events = extract_exercise_events(&content)?;
 
     if new_events.is_empty() {
-        println!("  No exercise events in {}, leaving untouched.", path.display());
+        log!("  No exercise events in {}, leaving untouched.", path.display());
         return Ok(0);
     }
 
     let count = new_events.len();
-    println!("  {} exercise event(s) found.", count);
+    log!("  {} exercise event(s) found.", count);
     update_aggregate(downloads, new_events)?;
     Ok(count)
 }
@@ -238,7 +250,7 @@ fn update_aggregate(
     fs::write(&tmp_path, &output)?;
     fs::rename(&tmp_path, &aggregate_path)?;
 
-    println!(
+    log!(
         "  Wrote {} total event(s) to {}",
         events.len(),
         aggregate_path.display()
