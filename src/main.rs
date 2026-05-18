@@ -1,4 +1,5 @@
 use chrono::{FixedOffset, NaiveDateTime, TimeZone};
+use sha2::{Digest, Sha256};
 use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::fs;
@@ -142,15 +143,50 @@ fn process_file(downloads: &Path, path: &Path) -> Result<usize, Box<dyn std::err
     Ok(count)
 }
 
-fn event_uid(event: &str) -> String {
+/// Returns the value of the UID: line, which normalize_uid guarantees is present.
+fn event_uid(event: &str) -> Option<String> {
     for line in event.lines() {
         let line = line.trim_end_matches('\r');
         if let Some(uid) = line.strip_prefix("UID:") {
-            return uid.to_string();
+            return Some(uid.to_string());
         }
     }
-    // Fall back to the full event text so UID-less events are still kept.
-    event.to_string()
+    None
+}
+
+/// Ensures every event has a UID: line inserted after BEGIN:VEVENT.
+/// Priority: existing UID > Peloton player URL > SHA-256 of the raw event text.
+fn ensure_uid(lines: &mut Vec<String>) {
+    if lines.iter().any(|l| l.starts_with("UID:")) {
+        return;
+    }
+    let uid = lines
+        .iter()
+        .find_map(|l| {
+            l.strip_prefix("URL:")
+                .map(|u| get_peloton_player_url(u))
+                .filter(|u| u.is_some())
+                .map(|u| u.unwrap())
+        })
+        .unwrap_or_else(|| {
+            let raw = render_event(lines);
+            hex::encode(Sha256::digest(raw.as_bytes()))
+        });
+    if let Some(pos) = lines.iter().position(|l| l == "BEGIN:VEVENT") {
+        lines.insert(pos + 1, format!("UID:{}", uid));
+    }
+}
+
+fn get_peloton_player_url(url: &str) -> Option<String> {
+    let prefix = "https://members.onepeloton.com/classes/player/";
+    match url.strip_prefix(prefix) {
+        Some(id) => if id.len() == 32 && id.chars().all(|c| c.is_ascii_hexdigit()) {
+            Some(id.parse().unwrap())
+        } else {
+            None
+        },
+        None => None,
+    }
 }
 
 fn update_aggregate(
@@ -175,10 +211,14 @@ fn update_aggregate(
 
     for event in existing.into_iter().chain(new_events) {
         let uid = event_uid(&event);
-        if let Some(&idx) = uid_to_idx.get(&uid) {
+        if uid.is_none() {
+            return Err(format!("Failed to determine event uid: {}", event).into());
+        }
+        let unwrapped_uid = uid.unwrap();
+        if let Some(&idx) = uid_to_idx.get(&unwrapped_uid) {
             events[idx] = event;
         } else {
-            uid_to_idx.insert(uid, events.len());
+            uid_to_idx.insert(unwrapped_uid, events.len());
             events.push(event);
         }
     }
@@ -222,6 +262,7 @@ fn extract_exercise_events(content: &str) -> Result<Vec<String>, Box<dyn std::er
             current.push("END:VEVENT".to_string());
             in_event = false;
             if is_exercise_event(&current) {
+                ensure_uid(&mut current);
                 events.push(render_event(&current));
             }
         } else if in_event {
